@@ -1,0 +1,14 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+pydantic==2.9.2
+pydantic-settings==2.5.2
+langgraph==0.2.34
+google-generativeai==0.8.3
+supabase==2.7.4
+stripe==11.1.1
+openai-whisper
+numpy==2.1.1
+requests==2.32.3
+python-dotenv==1.0.1
+google-cloud-aiplatform>=1.70.0
