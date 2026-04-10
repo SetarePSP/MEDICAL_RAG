@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     gemini_api_key: str = ""
-    gemini_chat_model: str = "gemini-1.5-flash"
+    gemini_chat_model: str = "gemini-2.5-flash"
     gemini_embedding_model: str = "models/text-embedding-004"
     # auto | gemini | rest | vertex — use vertex when Gemini API key blocks EmbedContent
     gemini_embedding_backend: str = "auto"
@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""
     stripe_currency: str = "eur"
     whisper_model: str = "base"
+
+    # LangSmith observability (auto-traces LangGraph when set)
+    langchain_tracing_v2: str = ""
+    langchain_api_key: str = ""
+    langchain_project: str = "medical-rag"
+
+    # Sentry error tracking
+    sentry_dsn: str = ""
 
 
 settings = Settings()

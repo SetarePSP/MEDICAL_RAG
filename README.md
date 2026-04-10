@@ -12,14 +12,17 @@ An AI-powered medical intake assistant that conducts multi-turn patient intervie
 - **Mock payment flow** — Card form → booking saved to database → confirmation via Email/WhatsApp/Telegram
 - **Multilingual** — Responds in the same language the user writes (English, Italian, etc.)
 - **Emergency detection** — Flags critical symptoms (chest pain, stroke) and advises calling 112
+- **LLM Observability** — Full trace visualization via LangSmith
+- **Error Tracking** — Sentry integration for production monitoring
+- **CI/CD** — GitHub Actions auto-deploys backend to Cloud Run on push
 
 ## Architecture
 
 ```
-frontend/          React + TypeScript + Tailwind (Vite)
-backend/
+frontend/          React + TypeScript + Tailwind (Vite) → deployed on Vercel
+backend/           FastAPI + LangGraph → deployed on Cloud Run
   app/
-    main.py        FastAPI entry point
+    main.py        FastAPI entry point + Sentry init
     graph.py       LangGraph state machine (triage → search → match)
     models.py      Pydantic request/response schemas
     config.py      Settings from .env
@@ -39,6 +42,9 @@ backend/
     ingest_embeddings.py   Generate vector embeddings for all providers
   supabase/
     schema.sql             Database schema (run in Supabase SQL Editor)
+  Dockerfile               Cloud Run container definition
+.github/workflows/
+  deploy-backend.yml       CI/CD pipeline for Cloud Run
 ```
 
 ## Prerequisites
@@ -52,7 +58,7 @@ backend/
   - `Vertex AI User` IAM role on your account
 - ffmpeg (for voice input): `brew install ffmpeg`
 
-## Setup
+## Local Development
 
 ### 1. Database (Supabase)
 
@@ -72,9 +78,7 @@ cp .env.example .env
 Seed the database and generate embeddings:
 
 ```bash
-# Authenticate with Google Cloud (needed for Vertex AI embeddings)
 gcloud auth application-default login
-
 python scripts/seed_db.py
 python scripts/ingest_embeddings.py --only-missing
 ```
@@ -82,8 +86,6 @@ python scripts/ingest_embeddings.py --only-missing
 Start the backend:
 
 ```bash
-cd backend
-source ../.venv/bin/activate
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -97,13 +99,98 @@ npm run dev
 
 Open http://localhost:5173 in your browser.
 
+## Deployment
+
+### Backend → Google Cloud Run
+
+**One-time setup:**
+
+```bash
+# 1. Create an Artifact Registry repo (once)
+gcloud artifacts repositories create medical-rag \
+  --repository-format=docker \
+  --location=us-central1
+
+# 2. Build & push the Docker image
+cd backend
+gcloud builds submit --tag us-central1-docker.pkg.dev/YOUR_PROJECT_ID/medical-rag/api
+
+# 3. Deploy to Cloud Run
+gcloud run deploy medical-rag-api \
+  --image us-central1-docker.pkg.dev/YOUR_PROJECT_ID/medical-rag/api \
+  --region us-central1 \
+  --platform managed \
+  --allow-unauthenticated \
+  --port 8080 \
+  --memory 1Gi \
+  --set-env-vars "GEMINI_API_KEY=xxx,SUPABASE_URL=xxx,SUPABASE_SERVICE_ROLE_KEY=xxx,GOOGLE_CLOUD_PROJECT=xxx"
+```
+
+Cloud Run gives you a URL like `https://medical-rag-api-xxxxx.a.run.app`.
+
+**Automated CI/CD:** The included GitHub Actions workflow (`.github/workflows/deploy-backend.yml`) auto-deploys on every push to `main` that changes `backend/` files. Add these GitHub Secrets:
+
+| Secret | Value |
+|--------|-------|
+| `GCP_PROJECT_ID` | Your Google Cloud project ID |
+| `GCP_SA_KEY` | Service account JSON key (with Cloud Run + Artifact Registry permissions) |
+| `GEMINI_API_KEY` | Gemini API key |
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key |
+| `SENTRY_DSN` | Sentry DSN (optional) |
+| `LANGCHAIN_API_KEY` | LangSmith API key (optional) |
+
+### Frontend → Vercel
+
+1. Go to [vercel.com](https://vercel.com) and sign in with GitHub
+2. Click **"Add New Project"** → import `SetarePSP/MEDICAL_RAG`
+3. Set **Root Directory** to `frontend`
+4. Add environment variable: `VITE_API_BASE_URL` = your Cloud Run URL
+5. Click **Deploy**
+
+Vercel auto-deploys on every push to `main`.
+
+## Monitoring & Observability
+
+### LangSmith (LLM Traces)
+
+Traces every LangGraph invocation — see prompts, entity extraction, search decisions, and response times.
+
+1. Sign up at [smith.langchain.com](https://smith.langchain.com)
+2. Create an API key under Settings
+3. Add to `.env`:
+   ```
+   LANGCHAIN_TRACING_V2=true
+   LANGCHAIN_API_KEY=your-key
+   LANGCHAIN_PROJECT=medical-rag
+   ```
+
+### Sentry (Error Tracking)
+
+Catches every unhandled exception with full stack traces, request data, and performance metrics.
+
+1. Sign up at [sentry.io](https://sentry.io)
+2. Create a new project (choose **FastAPI**)
+3. Copy the DSN and add to `.env`:
+   ```
+   SENTRY_DSN=your-dsn
+   ```
+
+### Cloud Run Metrics (Automatic)
+
+When deployed on Cloud Run, you get these for free in GCP Console:
+- Request count, latency, error rate
+- Memory and CPU usage
+- Cold start frequency
+- Logs (stdout from uvicorn)
+
 ## Environment Variables
 
 All backend secrets go in `backend/.env` (never committed — listed in .gitignore):
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GEMINI_API_KEY` | Yes | Gemini API key for chat (create at aistudio.google.com) |
+| `GEMINI_API_KEY` | Yes | Gemini API key for chat |
 | `GEMINI_CHAT_MODEL` | No | Default: `gemini-2.5-flash` |
 | `SUPABASE_URL` | Yes | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key |
@@ -113,6 +200,10 @@ All backend secrets go in `backend/.env` (never committed — listed in .gitigno
 | `GOOGLE_PLACES_API_KEY` | No | For address enrichment |
 | `STRIPE_SECRET_KEY` | No | For real Stripe payments |
 | `WHISPER_MODEL` | No | Default: `base` |
+| `LANGCHAIN_TRACING_V2` | No | Set to `true` to enable LangSmith |
+| `LANGCHAIN_API_KEY` | No | LangSmith API key |
+| `LANGCHAIN_PROJECT` | No | Default: `medical-rag` |
+| `SENTRY_DSN` | No | Sentry error tracking DSN |
 
 Frontend uses `VITE_API_BASE_URL` (defaults to `http://localhost:8000`).
 
@@ -133,7 +224,8 @@ Frontend uses `VITE_API_BASE_URL` (defaults to `http://localhost:8000`).
 
 1. User describes symptoms in natural language
 2. Gemini conducts a clinical interview (asks follow-ups, extracts age/city/symptoms)
-3. LLM infers the appropriate specialty and asks for confirmation
+3. LLM infers the appropriate specialty and sets `ready_to_search` flag
 4. Hybrid search finds matching providers (structured filters + vector similarity)
-5. User selects a provider, picks a time slot, completes mock payment
-6. Booking is saved to database, confirmation shared via Email/WhatsApp/Telegram
+5. Results are reranked by symptom relevance and post-filtered by city/specialty
+6. User selects a provider, picks a time slot, completes mock payment
+7. Booking is saved to database, confirmation shared via Email/WhatsApp/Telegram

@@ -3,6 +3,7 @@
 # Manages session persistence and routes user messages through the LangGraph pipeline.
 
 import logging
+import os
 
 import stripe
 from datetime import datetime, timedelta
@@ -11,6 +12,20 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+
+if settings.sentry_dsn:
+    import sentry_sdk
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        traces_sample_rate=0.3,
+        environment=os.getenv("ENVIRONMENT", "production"),
+    )
+
+if settings.langchain_tracing_v2.lower() == "true" and settings.langchain_api_key:
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+    os.environ.setdefault("LANGCHAIN_API_KEY", settings.langchain_api_key)
+    os.environ.setdefault("LANGCHAIN_PROJECT", settings.langchain_project)
+
 from app.graph import app_graph
 from pydantic import BaseModel as PydanticBaseModel
 from app.models import BookingStatusResponse, ChatRequest, ChatResponse, CheckoutRequest, ProfessionalCandidate
