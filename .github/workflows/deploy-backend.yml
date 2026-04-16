@@ -31,11 +31,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # secrets cannot be used in `if:` — use env + shell (see GitHub docs).
       - name: Fail if GCP_SA_KEY is missing
-        if: ${{ secrets.GCP_SA_KEY == '' }}
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
-          echo "::error::GCP_SA_KEY is not set or is empty. In the repo: Settings → Secrets and variables → Actions → New repository secret. Name: GCP_SA_KEY. Value: paste the full JSON key from GCP (IAM → Service accounts → Keys → Add JSON key)."
-          exit 1
+          if [ -z "${GCP_SA_KEY}" ]; then
+            echo "::error::GCP_SA_KEY is not set or is empty. Repo Settings → Secrets → Actions → add GCP_SA_KEY (full JSON service account key)."
+            exit 1
+          fi
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
