@@ -1,6 +1,6 @@
 # deploy-backend.yml — Auto-deploy backend to Google Cloud Run on push to main.
 # Required GitHub Secrets: GCP_PROJECT_ID, GCP_SA_KEY (service account JSON),
-# and all backend env vars (GEMINI_API_KEY, SUPABASE_URL, etc.)
+# GEMINI_API_KEY, SUPABASE_*, OPENAI_API_KEY (for /api/tts on Cloud Run), etc.
 
 name: Deploy Backend to Cloud Run
 
@@ -68,6 +68,8 @@ jobs:
           LANGCHAIN_TRACING_V2=true,\
           LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }},\
           LANGCHAIN_PROJECT=medical-rag,\
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},\
+          OPENAI_TTS_SPEED=1.12,\
           ENVIRONMENT=production"
 
       - name: Show deployed URL
