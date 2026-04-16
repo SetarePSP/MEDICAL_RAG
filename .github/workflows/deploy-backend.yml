@@ -1,10 +1,6 @@
 # deploy-backend.yml — Auto-deploy backend to Google Cloud Run on push to main.
-#
-# Required GitHub Secrets (Repository → Settings → Secrets and variables → Actions):
-#   GCP_PROJECT_ID, GCP_SA_KEY (full JSON of a service account key), GEMINI_API_KEY, …
-#
-# If auth fails with: "must specify exactly one of workload_identity_provider or credentials_json"
-# → GCP_SA_KEY is missing, empty, or not visible to this workflow (use repository secrets, not only org without access).
+# Required GitHub Secrets: GCP_PROJECT_ID, GCP_SA_KEY (service account JSON),
+# and all backend env vars (GEMINI_API_KEY, SUPABASE_URL, etc.)
 
 name: Deploy Backend to Cloud Run
 
@@ -30,16 +26,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      # secrets cannot be used in `if:` — use env + shell (see GitHub docs).
-      - name: Fail if GCP_SA_KEY is missing
-        env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
-        run: |
-          if [ -z "${GCP_SA_KEY}" ]; then
-            echo "::error::GCP_SA_KEY is not set or is empty. Repo Settings → Secrets → Actions → add GCP_SA_KEY (full JSON service account key)."
-            exit 1
-          fi
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -82,8 +68,6 @@ jobs:
           LANGCHAIN_TRACING_V2=true,\
           LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }},\
           LANGCHAIN_PROJECT=medical-rag,\
-          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},\
-          OPENAI_TTS_SPEED=1.12,\
           ENVIRONMENT=production"
 
       - name: Show deployed URL
