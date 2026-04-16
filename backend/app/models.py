@@ -24,6 +24,16 @@ class ProfessionalCandidate(BaseModel):
     supports_weight_kg: int | None = None
 
 
+class TtsRequest(BaseModel):
+    text: str = Field(..., max_length=4096)
+
+
+class TranscribeResponse(BaseModel):
+    """Speech-to-text only; user sends the message via /api/chat when ready."""
+
+    text: str
+
+
 class ChatResponse(BaseModel):
     session_id: str
     reply: str
@@ -33,6 +43,8 @@ class ChatResponse(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
     extracted_entities: dict[str, Any] = Field(default_factory=dict)
     candidates: list[ProfessionalCandidate] = Field(default_factory=list)
+    # Set only for /api/voice: what Whisper transcribed (so the UI can show the user message).
+    transcript: str | None = None
 
 
 class CheckoutRequest(BaseModel):

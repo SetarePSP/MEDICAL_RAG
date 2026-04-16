@@ -1,14 +1,15 @@
 # main.py — FastAPI application entry point.
-# Exposes: /api/chat, /api/voice, /api/checkout, /api/bookings, /api/availability.
+# Exposes: /api/chat, /api/transcribe, /api/voice, /api/tts, /api/checkout, /api/bookings, /api/availability.
 # Manages session persistence and routes user messages through the LangGraph pipeline.
 
 import logging
 import os
 
+import requests
 import stripe
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
@@ -25,10 +26,20 @@ if settings.langchain_tracing_v2.lower() == "true" and settings.langchain_api_ke
     os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
     os.environ.setdefault("LANGCHAIN_API_KEY", settings.langchain_api_key)
     os.environ.setdefault("LANGCHAIN_PROJECT", settings.langchain_project)
+    if settings.langchain_endpoint:
+        os.environ.setdefault("LANGCHAIN_ENDPOINT", settings.langchain_endpoint)
 
 from app.graph import app_graph
 from pydantic import BaseModel as PydanticBaseModel
-from app.models import BookingStatusResponse, ChatRequest, ChatResponse, CheckoutRequest, ProfessionalCandidate
+from app.models import (
+    BookingStatusResponse,
+    ChatRequest,
+    ChatResponse,
+    CheckoutRequest,
+    ProfessionalCandidate,
+    TranscribeResponse,
+    TtsRequest,
+)
 from app.services.booking_store import (
     attach_checkout_session,
     confirm_booking_by_checkout_session,
@@ -52,9 +63,65 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+def root():
+    return {
+        "service": "Medical RAG API",
+        "status": "running",
+        "docs": "/docs",
+        "health": "/health",
+    }
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/api/tts/enabled")
+def tts_enabled():
+    return {"enabled": bool((settings.openai_api_key or "").strip())}
+
+
+@app.post("/api/tts")
+def text_to_speech(req: TtsRequest):
+    """Proxy OpenAI TTS so the API key stays on the server. Returns MP3 bytes."""
+    key = (settings.openai_api_key or "").strip()
+    if not key:
+        raise HTTPException(
+            status_code=503,
+            detail="OpenAI TTS is not configured. Set OPENAI_API_KEY in the backend environment.",
+        )
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is empty")
+    model = (settings.openai_tts_model or "tts-1").strip()
+    voice = (settings.openai_tts_voice or "nova").strip()
+    speed = float(settings.openai_tts_speed or 1.0)
+    speed = max(0.25, min(4.0, speed))
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/audio/speech",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "voice": voice,
+                "input": text[:4096],
+                "speed": speed,
+            },
+            timeout=120,
+        )
+    except requests.RequestException as exc:
+        logging.getLogger("uvicorn.error").exception("OpenAI TTS request failed")
+        raise HTTPException(status_code=502, detail=f"TTS request failed: {exc}") from exc
+    if r.status_code != 200:
+        err = r.text[:500]
+        logging.getLogger("uvicorn.error").warning("OpenAI TTS error %s: %s", r.status_code, err)
+        raise HTTPException(status_code=502, detail=f"OpenAI TTS error: {err}")
+    return Response(content=r.content, media_type="audio/mpeg")
 
 
 @app.on_event("startup")
@@ -118,7 +185,26 @@ def chat(req: ChatRequest):
         missing_fields=result["missing_fields"],
         extracted_entities=result["entities"],
         candidates=[ProfessionalCandidate(**c) for c in result["candidates"]],
+        transcript=None,
     )
+
+
+@app.post("/api/transcribe", response_model=TranscribeResponse)
+def transcribe_only(file: UploadFile = File(...)):
+    """Whisper STT only — text goes to the client; user confirms via /api/chat."""
+    try:
+        text = transcribe_audio(file)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Voice transcription requires ffmpeg. "
+                "Install it (macOS: `brew install ffmpeg`) and retry."
+            ),
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Voice transcription failed: {exc}") from exc
+    return TranscribeResponse(text=text)
 
 
 @app.post("/api/voice", response_model=ChatResponse)
@@ -135,7 +221,18 @@ def voice_chat(file: UploadFile = File(...), session_id: str | None = Form(defau
         ) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Voice transcription failed: {exc}") from exc
-    return chat(ChatRequest(message=text, session_id=session_id))
+    out = chat(ChatRequest(message=text, session_id=session_id))
+    return ChatResponse(
+        session_id=out.session_id,
+        reply=out.reply,
+        status=out.status,
+        decision_mode=out.decision_mode,
+        decision_reason=out.decision_reason,
+        missing_fields=out.missing_fields,
+        extracted_entities=out.extracted_entities,
+        candidates=out.candidates,
+        transcript=text,
+    )
 
 
 @app.post("/api/checkout")

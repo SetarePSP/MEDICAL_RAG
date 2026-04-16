@@ -91,8 +91,95 @@ Use conversational follow-ups, for example:
 - "Got it, you're 28. Which city in Italy are you in so I can find someone nearby?"
 - "I understand. I'll look for a General Practitioner for you in Milan. I just need a second to check providers."
 Keep responses medically cautious.
-Always respond in the same language the user is writing in. If the user writes in English, reply in English. If the user writes in Italian, reply in Italian. Match the user's language.
+
+Language policy (CRITICAL):
+- Italy is only the geographic setting for providers. It does NOT mean you should answer in Italian.
+- The conversation language is locked to how the user started: if their first substantive messages are in English,
+  keep assistant_reply in English for the whole chat; if they started in Italian, keep Italian throughout.
+- Do not switch languages mid-conversation (e.g. do not switch to Italian because you ask for an Italian city).
+- Use English role names when the conversation is in English ("general practitioner" / "GP", not "Medico di Base").
+- A separate instruction will state the mandatory reply language for this turn — follow it exactly.
 """
+
+
+def _ordered_user_messages(transcript: list[dict[str, str]] | None, user_message: str) -> list[str]:
+    """Chronological user texts; current turn is not yet in transcript when analyze_intake runs."""
+    out: list[str] = []
+    for t in transcript or []:
+        if t.get("role") == "user":
+            c = (t.get("content") or "").strip()
+            if c:
+                out.append(c)
+    um = (user_message or "").strip()
+    if um:
+        out.append(um)
+    return out
+
+
+def _classify_snippet_language(text: str) -> str | None:
+    """Return 'English', 'Italian', or None if too little signal."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    if any(ch in t for ch in "àèéìòù"):
+        return "Italian"
+    if re.search(r"\b(salve|ciao|buongiorno|buonasera)\b", t, re.IGNORECASE):
+        return "Italian"
+    pad = f" {t.lower()} "
+    italian_markers = (
+        " ciao ",
+        "perché",
+        " grazie ",
+        " sono ",
+        " ho un ",
+        " mi fa male ",
+        " mal di testa",
+        " medico di base",
+        " dove sei",
+        "in quale città",
+        " quale città ",
+        " mi trovo ",
+        " sto a ",
+        " buongiorno",
+        " buonasera",
+        " salve ",
+    )
+    if any(m in pad for m in italian_markers):
+        return "Italian"
+    english_markers = (
+        " headache ",
+        " severity ",
+        " i have",
+        " hi ",
+        " hello ",
+        " about ",
+        " weeks",
+        " pain ",
+        " hurt ",
+        " been ",
+        " thank",
+    )
+    if any(m in pad for m in english_markers):
+        return "English"
+    if len(t) <= 6:
+        low = t.lower().strip("!.?")
+        if low in ("ciao", "salve"):
+            return "Italian"
+        if low in ("hi", "hey", "hello", "ok", "yes", "no", "thanks"):
+            return "English"
+    return None
+
+
+def _conversation_reply_language(transcript: list[dict[str, str]] | None, user_message: str) -> str:
+    """Lock assistant language to the user's opening language (English vs Italian)."""
+    msgs = _ordered_user_messages(transcript, user_message)
+    if not msgs:
+        return "English"
+    for snippet in msgs[:5]:
+        lang = _classify_snippet_language(snippet)
+        if lang is not None:
+            return lang
+    return "English"
 
 
 def _model(model_name: str) -> Any:
@@ -839,8 +926,12 @@ def analyze_intake(
     if not settings.gemini_api_key:
         return _fallback_intake(user_message, known_entities)
 
+    reply_lang = _conversation_reply_language(transcript, user_message)
     prompt = (
         f"{SYSTEM_PROMPT}\n\n"
+        f"MANDATORY language for assistant_reply: {reply_lang} only (locked to how the user started the chat). "
+        f"Every word of assistant_reply must be in {reply_lang}. "
+        "Do not mix languages or switch mid-conversation.\n\n"
         f"Known entities from previous turns: {json.dumps(known_entities or {})}\n"
         f"Full transcript history: {json.dumps(transcript or [])}\n\n"
         f"User: {user_message}\n\n"

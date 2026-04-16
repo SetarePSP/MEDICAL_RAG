@@ -67,6 +67,8 @@ jobs:
           LANGCHAIN_TRACING_V2=true,\
           LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }},\
           LANGCHAIN_PROJECT=medical-rag,\
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},\
+          OPENAI_TTS_SPEED=1.12,\
           ENVIRONMENT=production"
 
       - name: Show deployed URL

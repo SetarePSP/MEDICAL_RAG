@@ -1,9 +1,10 @@
 // App.tsx — Main chat UI for the Medical RAG booking system.
 // Handles: conversational intake, provider match display, time slot selection,
 // mock payment flow, booking confirmation, and Email/WhatsApp/Telegram sharing.
+// Voice: /api/transcribe fills the input; user edits and sends via /api/chat.
 
-import { Mic, Send, Stethoscope, User, Bot } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Bot, Mic, Send, Stethoscope, User, Volume2, VolumeX } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 type ChatResponse = {
   session_id: string;
@@ -66,11 +67,98 @@ export default function App() {
   const [contactPhone, setContactPhone] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [recorder, setRecorder] = useState<MediaRecorder | null>(null);
+  const [speakerOn, setSpeakerOn] = useState(() => {
+    try {
+      return localStorage.getItem("medical-rag-speaker") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const [ttsAvailable, setTtsAvailable] = useState<boolean | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsUrlRef = useRef<string | null>(null);
+  const speakerOnRef = useRef(speakerOn);
+  useLayoutEffect(() => {
+    speakerOnRef.current = speakerOn;
+  }, [speakerOn]);
+
+  const toggleSpeaker = useCallback(() => {
+    setSpeakerOn((v) => {
+      const next = !v;
+      speakerOnRef.current = next;
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/tts/enabled`)
+      .then((r) => r.json())
+      .then((d: { enabled?: boolean }) => setTtsAvailable(!!d.enabled))
+      .catch(() => setTtsAvailable(false));
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("medical-rag-speaker", speakerOn ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+    if (!speakerOn && ttsAudioRef.current) {
+      ttsAudioRef.current.pause();
+    }
+  }, [speakerOn]);
+
+  /** One continuous TTS per reply (no split — avoids awkward pauses mid-sentence). */
+  const speakReply = useCallback(async (text: string) => {
+    if (!speakerOnRef.current || !text.trim()) return;
+    const segment = text.trim().slice(0, 4096);
+    try {
+      const res = await fetch(`${API_BASE}/api/tts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: segment }),
+      });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      if (ttsUrlRef.current) {
+        URL.revokeObjectURL(ttsUrlRef.current);
+      }
+      const url = URL.createObjectURL(blob);
+      ttsUrlRef.current = url;
+      if (ttsAudioRef.current) {
+        ttsAudioRef.current.pause();
+      }
+      const audio = new Audio(url);
+      ttsAudioRef.current = audio;
+      await new Promise<void>((resolve) => {
+        audio.onended = () => resolve();
+        audio.onerror = () => resolve();
+        void audio.play().catch(() => resolve());
+      });
+    } catch {
+      /* TTS optional */
+    }
+  }, []);
+
+  /** When the user turns Sound on mid-chat, speak the latest bot message immediately;
+   *  all later replies are still spoken via speakReply in handleSend / payment. */
+  const prevSpeakerOn = useRef(speakerOn);
+  useEffect(() => {
+    if (!speakerOn) {
+      prevSpeakerOn.current = false;
+      return;
+    }
+    const justTurnedOn = !prevSpeakerOn.current;
+    prevSpeakerOn.current = true;
+    if (!justTurnedOn) return;
+    const lastAgent = [...messages].reverse().find((m) => m.role === "agent");
+    if (lastAgent?.text) void speakReply(lastAgent.text);
+  }, [speakerOn, messages, speakReply]);
 
   const handleSend = async () => {
     if (!input.trim()) return;
@@ -95,6 +183,7 @@ export default function App() {
       }
 
       const data = (await res.json()) as ChatResponse;
+      void speakReply(data.reply);
       setSessionId(data.session_id);
       setMessages((prev) => [...prev, { role: "agent", text: data.reply }]);
       if (data.status === "matched" && data.candidates?.length) {
@@ -111,31 +200,51 @@ export default function App() {
   };
 
   const handleVoice = async (file: File) => {
+    if (!file.size) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "agent", text: "Recording was empty. Hold the mic a bit longer and try again." },
+      ]);
+      return;
+    }
     setLoading(true);
     try {
       const form = new FormData();
       form.append("file", file);
-      if (sessionId) form.append("session_id", sessionId);
-      const res = await fetch(`${API_BASE}/api/voice`, { method: "POST", body: form });
+      const res = await fetch(`${API_BASE}/api/transcribe`, { method: "POST", body: form });
 
       if (!res.ok) {
-        setMessages((prev) => [
-          ...prev,
-          { role: "agent", text: "Voice processing failed. Please try again." },
-        ]);
+        let detail = "Transcription failed. Please try again.";
+        try {
+          const errBody = (await res.json()) as { detail?: string };
+          if (errBody.detail) detail = String(errBody.detail);
+        } catch {
+          /* ignore */
+        }
+        setMessages((prev) => [...prev, { role: "agent", text: detail }]);
         return;
       }
 
-      const data = (await res.json()) as ChatResponse;
-      setSessionId(data.session_id);
-      setMessages((prev) => [...prev, { role: "agent", text: data.reply }]);
-      if (data.status === "matched" && data.candidates?.length) {
-        setCandidates(data.candidates);
+      const data = (await res.json()) as { text: string };
+      const text = (data.text ?? "").trim();
+      if (text) {
+        setInput(text);
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          { role: "agent", text: "No speech detected. Try again or type your message." },
+        ]);
       }
-    } catch {
+    } catch (e) {
+      console.error("Transcribe failed", e);
       setMessages((prev) => [
         ...prev,
-        { role: "agent", text: "Voice connection error. Please check backend status." },
+        {
+          role: "agent",
+          text:
+            "Could not transcribe audio. Check the backend or type your message. "
+            + "On Cloud Run, Whisper may need WHISPER_MODEL=tiny and 2Gi memory.",
+        },
       ]);
     } finally {
       setLoading(false);
@@ -226,14 +335,11 @@ export default function App() {
       city: paymentContext.doctor.city,
       slot: paymentContext.slot,
     });
-    setMessages((prev) => [
-      ...prev,
-      {
-        role: "agent",
-        text: `Payment completed. Your slot is reserved with ${paymentContext.doctor.name} on ${when}. `
-          + "Share your email or phone number so we can send your booking confirmation.",
-      },
-    ]);
+    const payMsg =
+      `Payment completed. Your slot is reserved with ${paymentContext.doctor.name} on ${when}. `
+      + "Share your email or phone number so we can send your booking confirmation.";
+    void speakReply(payMsg);
+    setMessages((prev) => [...prev, { role: "agent", text: payMsg }]);
     setCandidates([]);
     setPaymentContext(null);
     setPayName("");
@@ -303,15 +409,44 @@ export default function App() {
           overflow: "hidden",
         }}
       >
-        <header className="flex items-center gap-2 bg-blue-600 px-4 py-2.5 text-white shadow-md">
-          <div className="rounded-lg bg-white/20 p-1.5">
-            <Stethoscope size={18} />
+        <header className="flex items-center justify-between gap-2 bg-blue-600 px-4 py-2.5 text-white shadow-md">
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="rounded-lg bg-white/20 p-1.5">
+              <Stethoscope size={18} />
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-sm font-semibold leading-tight">AI Medical Concierge</h1>
+              <p className="text-[11px] italic text-blue-100">Secure Medical Intake • Italy</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-sm font-semibold leading-tight">AI Medical Concierge</h1>
-            <p className="text-[11px] italic text-blue-100">Secure Medical Intake • Italy</p>
-          </div>
+          <button
+            type="button"
+            title={
+              speakerOn
+                ? ttsAvailable === false
+                  ? "Sound on (add OPENAI_API_KEY in backend/.env to hear audio)"
+                  : "Read assistant replies aloud — on"
+                : "Click to turn read-aloud on"
+            }
+            onClick={toggleSpeaker}
+            className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${
+              speakerOn
+                ? ttsAvailable === false
+                  ? "bg-amber-500/40 text-white ring-1 ring-amber-200/80 hover:bg-amber-500/50"
+                  : "bg-white/25 text-white hover:bg-white/35"
+                : "bg-white/10 text-blue-100 hover:bg-white/20"
+            }`}
+          >
+            {speakerOn ? <Volume2 size={18} /> : <VolumeX size={18} />}
+            <span className="hidden sm:inline">{speakerOn ? "Sound on" : "Sound off"}</span>
+          </button>
         </header>
+        {speakerOn && ttsAvailable === false && (
+          <div className="border-b border-amber-200/80 bg-amber-50 px-4 py-2 text-center text-[11px] text-amber-950">
+            Add <code className="rounded bg-amber-100 px-1">OPENAI_API_KEY</code> to{" "}
+            <code className="rounded bg-amber-100 px-1">backend/.env</code> and restart the API — then replies will be read aloud.
+          </div>
+        )}
 
         <main className="space-y-4 bg-slate-50/50 p-4" style={{ flex: 1, overflowY: "auto" }}>
           {messages.length === 0 && (

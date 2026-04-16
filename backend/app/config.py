@@ -22,14 +22,25 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""
     stripe_currency: str = "eur"
     whisper_model: str = "base"
+    # Whisper STT: leave language empty for auto-detect (IT speech → IT text, EN → EN).
+    # Set e.g. it or en to force one language. task=translate outputs English text from any language.
+    whisper_language: str = ""
+    whisper_task: str = ""  # empty = transcribe in spoken language; set to "translate" for English-only text
 
     # LangSmith observability (auto-traces LangGraph when set)
     langchain_tracing_v2: str = ""
     langchain_api_key: str = ""
     langchain_project: str = "medical-rag"
+    langchain_endpoint: str = ""
 
     # Sentry error tracking
     sentry_dsn: str = ""
+
+    # OpenAI Text-to-Speech (optional — /api/tts reads replies aloud on the client)
+    openai_api_key: str = ""
+    openai_tts_model: str = "tts-1"
+    openai_tts_voice: str = "nova"
+    openai_tts_speed: float = 1.12
 
 
 settings = Settings()
