@@ -1,6 +1,10 @@
 # deploy-backend.yml — Auto-deploy backend to Google Cloud Run on push to main.
-# Required GitHub Secrets: GCP_PROJECT_ID, GCP_SA_KEY (service account JSON),
-# and all backend env vars (GEMINI_API_KEY, SUPABASE_URL, etc.)
+#
+# Required GitHub Secrets (Repository → Settings → Secrets and variables → Actions):
+#   GCP_PROJECT_ID, GCP_SA_KEY (full JSON of a service account key), GEMINI_API_KEY, …
+#
+# If auth fails with: "must specify exactly one of workload_identity_provider or credentials_json"
+# → GCP_SA_KEY is missing, empty, or not visible to this workflow (use repository secrets, not only org without access).
 
 name: Deploy Backend to Cloud Run
 
@@ -9,6 +13,7 @@ on:
     branches: [main]
     paths:
       - "backend/**"
+      - ".github/workflows/deploy-backend.yml"
 
 env:
   REGION: us-central1
@@ -25,6 +30,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Fail if GCP_SA_KEY is missing
+        if: ${{ secrets.GCP_SA_KEY == '' }}
+        run: |
+          echo "::error::GCP_SA_KEY is not set or is empty. In the repo: Settings → Secrets and variables → Actions → New repository secret. Name: GCP_SA_KEY. Value: paste the full JSON key from GCP (IAM → Service accounts → Keys → Add JSON key)."
+          exit 1
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
