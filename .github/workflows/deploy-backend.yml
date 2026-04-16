@@ -1,6 +1,13 @@
 # deploy-backend.yml — Auto-deploy backend to Google Cloud Run on push to main.
-# Required GitHub Secrets: GCP_PROJECT_ID, GCP_SA_KEY (service account JSON),
-# GEMINI_API_KEY, SUPABASE_*, OPENAI_API_KEY (for /api/tts on Cloud Run), etc.
+#
+# GitHub → Settings → Secrets and variables → Actions — use these names exactly:
+#   Required for deploy + core app:
+#     GCP_PROJECT_ID, GCP_SA_KEY, GEMINI_API_KEY,
+#     SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+#   Optional (empty secret = feature off / defaults):
+#     OPENAI_API_KEY, SENTRY_DSN, LANGCHAIN_API_KEY, LANGCHAIN_ENDPOINT,
+#     GOOGLE_PLACES_API_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+# Model names below are set in YAML (not secrets) unless you prefer secrets later.
 
 name: Deploy Backend to Cloud Run
 
@@ -52,24 +59,34 @@ jobs:
             --platform managed \
             --allow-unauthenticated \
             --port 8080 \
-            --memory 1Gi \
+            --memory 2Gi \
             --cpu 1 \
             --min-instances 0 \
             --max-instances 3 \
             --set-env-vars "\
           GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }},\
           GEMINI_CHAT_MODEL=gemini-2.5-flash,\
-          SUPABASE_URL=${{ secrets.SUPABASE_URL }},\
-          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }},\
+          GEMINI_EMBEDDING_MODEL=models/text-embedding-004,\
+          GEMINI_EMBEDDING_BACKEND=vertex,\
           GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }},\
           VERTEX_AI_LOCATION=us-central1,\
-          GEMINI_EMBEDDING_BACKEND=vertex,\
-          SENTRY_DSN=${{ secrets.SENTRY_DSN }},\
+          VERTEX_EMBEDDING_MODEL=text-embedding-004,\
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }},\
+          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }},\
+          GOOGLE_PLACES_API_KEY=${{ secrets.GOOGLE_PLACES_API_KEY }},\
+          STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }},\
+          STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }},\
+          STRIPE_CURRENCY=eur,\
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},\
+          OPENAI_TTS_MODEL=tts-1,\
+          OPENAI_TTS_VOICE=nova,\
+          OPENAI_TTS_SPEED=1.12,\
+          WHISPER_MODEL=tiny,\
           LANGCHAIN_TRACING_V2=true,\
           LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }},\
           LANGCHAIN_PROJECT=medical-rag,\
-          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},\
-          OPENAI_TTS_SPEED=1.12,\
+          LANGCHAIN_ENDPOINT=${{ secrets.LANGCHAIN_ENDPOINT }},\
+          SENTRY_DSN=${{ secrets.SENTRY_DSN }},\
           ENVIRONMENT=production"
 
       - name: Show deployed URL
